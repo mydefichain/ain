@@ -573,6 +573,66 @@ UniValue gettoken(const JSONRPCRequest &request) {
     auto token = view->GetTokenGuessId(request.params[0].getValStr(), id);
     if (token) {
         auto res = tokenToJSON(*view, id, *token, true);
+
+        CAmount total = 0;
+        view->ForEachBalance([&](const CScript &owner, CTokenAmount balance) {
+            if (balance.nTokenId == id) {
+                total += balance.nValue;
+            }
+            return true;
+        });
+
+        view->ForEachVaultCollateral([&](const CVaultId &vaultId, const CBalances &balances) {
+            for (const auto &[tokenId, amount] : balances.balances) {
+                if (tokenId == id) {
+                    total += amount;
+                }
+            }
+            return true;
+        });
+
+        view->ForEachPoolPair([&](DCT_ID const &poolId, const CPoolPair &pool) {
+            if (pool.idTokenA == id) {
+                total += pool.reserveA;
+            }
+            if (pool.idTokenB == id) {
+                total += pool.reserveB;
+            }
+            return true;
+        });
+
+        auto lockAddress = Params().GetConsensus().smartContracts.at(SMART_CONTRACT_TOKENLOCK);
+        auto fsAddress = Params().GetConsensus().smartContracts.at(SMART_CONTRACT_DFIP_2203);
+        CAmount lockedForFS = 0;
+        const auto &value = view->GetTokenLockUserValue({fsAddress});
+        for (const auto &[tokenId, amount] : value.balances) {
+            if (tokenId == id) {
+                lockedForFS += amount;
+            }
+        }
+        auto inBurn= view->GetBalance(Params().GetConsensus().burnAddress, id).nValue;
+        auto fullFS = view->GetBalance(fsAddress, id).nValue + lockedForFS;
+        auto userLocked = view->GetBalance(lockAddress, id).nValue - lockedForFS;
+
+        CAmount openLoans= 0;
+        view->ForEachLoanTokenAmount([&](const CVaultId &vaultId, const CBalances &balances) {
+            for (const auto &[tokenId, amount] : balances.balances) {
+                if (tokenId == id) {
+                    openLoans += amount;
+                }
+            }
+            return true;
+        });
+
+        res.pushKV("totalOnChain",ValueFromAmount(total));
+
+        res.pushKV("inBurnAddress", ValueFromAmount(inBurn));
+        res.pushKV("userlocked", ValueFromAmount(userLocked));
+        res.pushKV("FutureSwap", ValueFromAmount(fullFS));
+        res.pushKV("freeOnDVM", ValueFromAmount(total-fullFS-userLocked-inBurn));
+
+        res.pushKV("openLoans", ValueFromAmount(openLoans));
+
         return GetRPCResultCache().Set(request, res);
     }
     throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Token not found");
